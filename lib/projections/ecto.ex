@@ -64,6 +64,21 @@ defmodule Commanded.Projections.Ecto do
       import unquote(__MODULE__)
 
       def update_projection(event, metadata, multi_fn) do
+        with %Ecto.Multi{} = multi <- prepare_projection(event, metadata, multi_fn),
+             {:ok, changes} <- attempt_transaction(multi) do
+          if function_exported?(__MODULE__, :after_update, 3) do
+            apply(__MODULE__, :after_update, [event, metadata, changes])
+          else
+            :ok
+          end
+        else
+          {:error, :verify_projection_version, :already_seen_event, _changes} -> :ok
+          {:error, _stage, error, _changes} -> {:error, error}
+          {:error, error} -> {:error, error}
+        end
+      end
+
+      def prepare_projection(event, metadata, multi_fn) do
         event_number = Map.fetch!(metadata, :event_number)
 
         changeset =
@@ -100,18 +115,7 @@ defmodule Commanded.Projections.Ecto do
           end)
           |> Ecto.Multi.update(:projection_version, changeset, prefix: prefix)
 
-        with %Ecto.Multi{} = multi <- apply_projection_to_multi(multi, multi_fn),
-             {:ok, changes} <- attempt_transaction(multi) do
-          if function_exported?(__MODULE__, :after_update, 3) do
-            apply(__MODULE__, :after_update, [event, metadata, changes])
-          else
-            :ok
-          end
-        else
-          {:error, :verify_projection_version, :already_seen_event, _changes} -> :ok
-          {:error, _stage, error, _changes} -> {:error, error}
-          {:error, error} -> {:error, error}
-        end
+        apply_projection_to_multi(multi, multi_fn)
       end
 
       defp apply_projection_to_multi(%Ecto.Multi{} = multi, multi_fn)
@@ -194,6 +198,12 @@ defmodule Commanded.Projections.Ecto do
           unquote(block)
         end)
       end
+
+      def project(unquote(event) = event, metadata) do
+        prepare_projection(event, metadata, fn var!(multi) ->
+          unquote(block)
+        end)
+      end
     end
   end
 
@@ -201,6 +211,10 @@ defmodule Commanded.Projections.Ecto do
     quote do
       def handle(unquote(event) = event, metadata) do
         update_projection(event, metadata, unquote(lambda))
+      end
+
+      def project(unquote(event) = event, metadata) do
+        prepare_projection(event, metadata, unquote(lambda))
       end
     end
   end
@@ -217,6 +231,12 @@ defmodule Commanded.Projections.Ecto do
           unquote(block)
         end)
       end
+
+      def project(unquote(event) = event, unquote(metadata) = metadata) do
+        prepare_projection(event, metadata, fn var!(multi) ->
+          unquote(block)
+        end)
+      end
     end
   end
 
@@ -224,6 +244,10 @@ defmodule Commanded.Projections.Ecto do
     quote do
       def handle(unquote(event) = event, unquote(metadata) = metadata) do
         update_projection(event, metadata, unquote(lambda))
+      end
+
+      def project(unquote(event) = event, unquote(metadata) = metadata) do
+        prepare_projection(event, metadata, unquote(lambda))
       end
     end
   end
